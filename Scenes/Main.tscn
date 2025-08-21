@@ -1,0 +1,13 @@
+[gd_scene load_steps=3 format=3 uid="uid://dtv3nwb0nx7k0"]
+
+[ext_resource type="Script" uid="uid://1trv8mvk8ig2" path="res://Scripts/main.gd" id="1_idj7w"]
+[ext_resource type="Script" uid="uid://cwbl7k548pyjd" path="res://Scripts/dungeon_generator.gd" id="2_kln2b"]
+
+[node name="Main" type="Node2D"]
+script = ExtResource("1_idj7w")
+
+[node name="Dungeon" type="Node2D" parent="."]
+script = ExtResource("2_kln2b")
+width = 12
+min_rooms = 10
+branching = 10.0
