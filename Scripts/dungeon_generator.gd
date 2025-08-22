@@ -1,24 +1,26 @@
+# dungeon_generator.gd
 extends Node2D
-
 class_name Dungeon1D
 
-# Parameters
-@export var width: int = 10
-@export var height: int = 10
-@export var min_rooms: int = 8
-@export var max_rooms: int = 14
-@export var branching: float =0.5 #Between 0 and 1, the higher the value the bushy the dungeon will look like
-@export var genSeed: int = 0 # Seed for random generation
+# --- Params ---
+@export var width: int = 9
+@export var height: int = 8
+@export var level: int = 1                           # Used for Isaac-style room count
 @export var cell_px: int = 64
-@export_range(0.0, 1.0, 0.05) var neighbor_expand_chance: float = 0.55
+@export var genSeed: int = 0
 
-# Cell Types
-enum CellType{ Empty = -1, Normal = 0, Start = 1, Boss = 2, Item = 3}
+# Growth knobs
+@export var expand_chance: float = 0.5               # 50%: chance a neighbor gets added
+@export var requeue_period: int = 6                  # if rooms target > 16, re-seed start every N pops
 
-var cells: Array = [] #Length of this == width*height
-var start_i: int = -1
-var boss_i: int = -1
-var item_i: int = -1
+# Types
+enum CellType { Empty = -1, Normal = 0, Start = 1, Boss = 2, Item = 3 }
+
+var cells: Array = []
+var start_i := -1
+var boss_i  := -1
+var item_i  := -1
+
 var _rng := RandomNumberGenerator.new()
 
 func _ready() -> void:
@@ -27,300 +29,221 @@ func _ready() -> void:
 	queue_redraw()
 
 func _seed() -> void:
-	if genSeed == 0: _rng.randomize()
-	else: _rng.seed = genSeed
+	if genSeed == 0:
+		_rng.randomize()
+	else:
+		_rng.seed = genSeed
 
-# Helper Functions
-func idx(x: int, y: int) -> int:
-	return y * width + x
-
-func xy(i: int) -> Vector2i:
-	return Vector2i(i % width, i / width)
-
-func in_bounds(x: int, y: int) -> bool:
-	return x >= 0 and x < width and y >= 0 and y < height
+# --- Helpers ---
+func idx(x: int, y: int) -> int: return y * width + x
+func xy(i: int) -> Vector2i: return Vector2i(i % width, i / width)
+func in_bounds_xy(x: int, y: int) -> bool: return x >= 0 and x < width and y >= 0 and y < height
+func in_bounds_i(i: int) -> bool:
+	var p := xy(i)
+	return in_bounds_xy(p.x, p.y)
 
 func neighbours(i: int) -> Array[int]:
 	var p := xy(i)
 	var out: Array[int] = []
-	if p.y > 0: out.append(i - width) #up
-	if p.y < height -1: out.append(i + width) #down
-	if p.x > 0: out.append(i - 1) #left
-	if p.x < width - 1: out.append(i + 1) #right
+	if p.y > 0: out.append(i - width)           # up
+	if p.y < height - 1: out.append(i + width)  # down
+	if p.x > 0: out.append(i - 1)               # left
+	if p.x < width - 1: out.append(i + 1)       # right
 	return out
 
-# Compute degree quickly (you already have _degree(i)).
-# Keep the neighbor on the path back to start, remove all other branches.
-func _ensure_dead_end(i: int, start_index: int) -> void:
-	if i == -1 or cells[i] == CellType.Empty:
-		return
-	if _degree(i) <= 1:
-		return
-
-	# Choose the neighbor closest to start to KEEP (so we don't cut Start off).
-	var keep_n := _neighbor_closest_to(i, start_index)
-	for n in neighbours(i):
-		if n == keep_n: 
-			continue
-		if cells[n] != CellType.Empty:
-			_remove_branch(i, n)  # delete everything reachable through n, without crossing back through i
-
-# Pick neighbor with smallest (estimated) distance to start.
-# Manhattan works well on this 4-connected grid; if you want exact graph distance later,
-# replace with a BFS distance map.
-func _neighbor_closest_to(i: int, start_index: int) -> int:
-	var best := -1
-	var best_d := 1_000_000
-	for n in neighbours(i):
-		if cells[n] == CellType.Empty: 
-			continue
-		var d := _manhattan(n, start_index)
-		if d < best_d:
-			best = n
-			best_d = d
-	return best
-
-# Remove the whole branch that lies "beyond" (from_i -> via_n), without crossing back through from_i.
-func _remove_branch(from_i: int, via_n: int) -> void:
-	var stack: Array[int] = [via_n]
-	var visited := {}
-	visited[ from_i ] = true  # acts as a hard boundary: don't cross back through the special room
-	while not stack.is_empty():
-		var cur: int = stack.pop_back()
-		if visited.has(cur):
-			continue
-		visited[cur] = true
-
-		# Delete this room.
-		if cells[cur] != CellType.Empty:
-			cells[cur] = CellType.Empty
-
-		# Flood outward, but never step back through 'from_i'.
-		for nn in neighbours(cur):
-			if visited.has(nn):
-				continue
-			if cells[nn] == CellType.Empty:
-				continue
-			# Don't step back through the pivot room.
-			if nn == from_i:
-				continue
-			stack.push_back(nn)
-
-func _collect_dead_ends_excluding(exclude: Array[int]) -> Array[int]:
-	var out: Array[int] = []
-	var skip := {}
-	for e in exclude: skip[e] = true
-	for i in range(cells.size()):
-		if cells[i] != CellType.Empty and not skip.has(i) and _degree(i) == 1:
-			out.append(i)
-	return out
-
-# Try to create a new dead-end by carving a single Normal cell
-# off an existing corridor/room that has an empty neighbor.
-func _carve_dead_end() -> int:
-	var attachment_points: Array[int] = []
-	for i in range(cells.size()):
-		if cells[i] == CellType.Empty: continue
-		# prefer corridors (degree 2) but allow anything with at least 1 empty neighbor
-		var has_empty := false
-		for n in neighbours(i):
-			if cells[n] == CellType.Empty:
-				has_empty = true
-				break
-		if has_empty:
-			attachment_points.append(i)
-
-	if attachment_points.is_empty():
-		return -1
-
-	# Pick a random attachment, then a random empty neighbor to become the dead end
-	var base := attachment_points[_rng.randi_range(0, attachment_points.size()-1)]
-	var empties: Array[int] = []
-	for n in neighbours(base):
-		if cells[n] == CellType.Empty:
-			empties.append(n)
-	if empties.is_empty():
-		return -1
-
-	var new_i := empties[_rng.randi_range(0, empties.size()-1)]
-	cells[new_i] = CellType.Normal
-	return new_i
-
-func _filled_neighbors(i: int) -> int:
+func filled_neighbour_count(i: int) -> int:
 	var c := 0
 	for n in neighbours(i):
 		if cells[n] != CellType.Empty:
 			c += 1
 	return c
 
-func _would_make_2x2(i: int) -> bool:
-	var p := xy(i)
-	var quads := [
-		[Vector2i(p.x, p.y),     Vector2i(p.x+1, p.y),   Vector2i(p.x,   p.y+1), Vector2i(p.x+1, p.y+1)],
-		[Vector2i(p.x-1, p.y),   Vector2i(p.x,   p.y),   Vector2i(p.x-1, p.y+1), Vector2i(p.x,   p.y+1)],
-		[Vector2i(p.x,   p.y-1), Vector2i(p.x+1, p.y-1), Vector2i(p.x,   p.y),   Vector2i(p.x+1, p.y)],
-		[Vector2i(p.x-1, p.y-1), Vector2i(p.x,   p.y-1), Vector2i(p.x-1, p.y),   Vector2i(p.x,   p.y)]
-	]
-	for quad in quads:
-		var in_bounds_all := true
-		var filled := 0
-		for q in quad:
-			if not in_bounds(q.x, q.y):
-				in_bounds_all = false
-				break
-			var qi := idx(q.x, q.y)
-			# pretend 'i' will be filled
-			if qi == i or cells[qi] != CellType.Empty:
-				filled += 1
-		if in_bounds_all and filled == 4:
-			return true
-	return false
+func grid_center_index() -> int:
+	return idx(width / 2, height / 2)
 
-# Generation Algorithm
+# --- Isaac floorplan ---
+func _target_room_count() -> int:
+	# random(2) + 5 + level * 2.6  (rounding to nearest int)
+	var base := (_rng.randi() % 2) + 5
+	return int(round(level * 2.6)) + base
+
 func generate() -> void:
-	#initialize cell array to EMPTY
+	# Try a few times to satisfy constraints (boss not adjacent to start, right room count)
+	var max_attempts := 50
+	for attempt in range(max_attempts):
+		if _try_generate_once():
+			return
+	# If all else fails, at least draw *something*
+	push_warning("Dungeon generation consistency checks failed after many attempts; using last attempt.")
+	queue_redraw()
+
+func _try_generate_once() -> bool:
+	# clear
 	cells.resize(width * height)
-	for i in range(cells.size()): cells[i] = CellType.Empty
+	for i in range(cells.size()):
+		cells[i] = CellType.Empty
+	start_i = -1
+	boss_i  = -1
+	item_i  = -1
 
-	# Grow the dungeon layout, starting from center cell
-	var center := idx(width / 2, height / 2)
-	var target :=  _rng.randi_range(min_rooms, max_rooms)
-	_grow(center, target)
+	var center := grid_center_index()
+	if not in_bounds_i(center):
+		center = idx(clamp(width / 2, 0, width-1), clamp(height / 2, 0, height-1))
 
-	# Place Special rooms
-	_place_special_rooms(center)
+	var target_rooms := _target_room_count()
+	var ok := _grow_bfs(center, target_rooms)
+	if not ok:
+		return false
 
-func _grow(start_index: int, target_count: int) -> void:
-	var queue: Array[int] = []
-	cells[start_index] = CellType.Normal
-	queue.append(start_index)
-
-	while _filled_count() < target_count and not queue.is_empty():
-		var pick := _rng.randi_range(0, queue.size()-1) if _rng.randf() < branching else queue.size() - 1
-		var current := queue[pick]
-		queue.remove_at(pick)
-
-		var nb := neighbours(current)
-		nb.shuffle()
-
-		var expanded := false
-		for n in nb:
-			if cells[n] == CellType.Empty and _filled_neighbors(n) <= 1 and not _would_make_2x2(n):
-				cells[n] = CellType.Normal
-				queue.append(n)
-				expanded = true
-				if _filled_count() >= target_count:
-					break
-
-		if not expanded and _rng.randf() < 0.35:
-			queue.append(current)
-
-func _place_special_rooms(center: int) -> void:
-	# Start: center or nearest filled
+	# specials (Isaac-style):
+	# Start at center (or nearest filled if center somehow empty)
 	start_i = center if cells[center] != CellType.Empty else _nearest_filled_to(center)
-	if start_i != -1:
-		cells[start_i] = CellType.Start
+	if start_i == -1:
+		return false
+	cells[start_i] = CellType.Start
 
-	# Gather dead ends excluding start
-	var dead_ends: Array[int] = _collect_dead_ends_excluding([start_i])
+	# Build end_rooms during growth; grab it
+	var end_rooms: Array[int] = _end_rooms_cached
+	# Remove start if it sneaked in
+	end_rooms = end_rooms.filter(func(i): return i != start_i and cells[i] != CellType.Empty)
 
-	# If we don't have at least 2 dead ends (boss + item), carve new cul-de-sacs
-	while dead_ends.size() < 2:
-		var carved := _carve_dead_end()  # adds a 1-tile branch off a corridor
-		if carved == -1:
-			break # couldn't carve; give up gracefully
-		dead_ends.append(carved)
+	# Boss = LAST end room encountered (furthest by outward growth)
+	if end_rooms.is_empty():
+		return false
+	boss_i = end_rooms.back()
+	# Consistency: Boss cannot be adjacent to Start; if true, fail & redo
+	if neighbours(boss_i).has(start_i):
+		return false
+	cells[boss_i] = CellType.Boss
 
-	# Boss: farthest from start among dead_ends
-	boss_i = _farthest_from(start_i, dead_ends)
-	if boss_i != -1:
-		cells[boss_i] = CellType.Boss
+	# Item = random end room (excluding start/boss)
+	var pool := end_rooms.duplicate()
+	pool = pool.filter(func(i): return i != boss_i and i != start_i)
+	if pool.is_empty():
+		# fallback: any non-empty, excluding start/boss, that is a dead end right now
+		for i in range(cells.size()):
+			if i != start_i and i != boss_i and cells[i] != CellType.Empty and filled_neighbour_count(i) == 1:
+				pool.append(i)
+	if pool.is_empty():
+		return false
+	item_i = pool[_rng.randi_range(0, pool.size()-1)]
+	cells[item_i] = CellType.Item
 
-	# Item: farthest from start among remaining dead_ends
-	var candidates: Array[int] = []
-	for i in dead_ends:
-		if i != boss_i and i != start_i:
-			candidates.append(i)
-
-	# If we still somehow lack a candidate, try to carve one more
-	if candidates.is_empty():
-		var carved2 := _carve_dead_end()
-		if carved2 != -1:
-			candidates.append(carved2)
-
-	item_i = _farthest_from(start_i, candidates)
-	if item_i != -1:
-		cells[item_i] = CellType.Item
-	
-func _filled_count() -> int:
+	# final count check
 	var count := 0
-	for cell in cells:
-		if cell != CellType.Empty:
-			count += 1
-	return count
+	for v in cells:
+		if v != CellType.Empty: count += 1
+	if abs(count - target_rooms) > 0:
+		# If we over- or under-shot because of blocking rules, just accept close fits,
+		# but you can require exact match by returning false here.
+		pass
 
-func _degree(i: int) -> int:
-	var d := 0
-	for n in neighbours(i):
-		if cells[n] != CellType.Empty:
-			d += 1
-	return d
+	queue_redraw()
+	return true
 
-func _manhattan(a: int, b: int) -> int:
-	var pa := xy(a)
-	var pb := xy(b)
-	return abs(pa.x - pb.x) + abs(pa.y - pb.y)
+# Cached during growth (processing-time dead ends)
+var _end_rooms_cached: Array[int] = []
+
+func _grow_bfs(start_index: int, target_count: int) -> bool:
+	_end_rooms_cached.clear()
+
+	# seed start
+	cells[start_index] = CellType.Normal
+	var placed := 1
+
+	var q: Array[int] = [start_index]
+	var pops := 0
+
+	while not q.is_empty() and placed < target_count:
+		var cur: int = q.pop_front()
+		pops += 1
+
+		var dirs := neighbours(cur)
+		dirs.shuffle()
+
+		var expanded_any := false
+		for n in dirs:
+			if placed >= target_count:
+				break
+			if cells[n] != CellType.Empty:
+				continue
+			# 50% chance gate
+			if _rng.randf() > expand_chance:
+				continue
+			# Isaac rule: don't place if this neighbor would have >1 filled neighbors (prevents loops)
+			var touching := 0
+			for nn in neighbours(n):
+				if cells[nn] != CellType.Empty:
+					touching += 1
+			if touching >= 2:
+				continue
+
+			# place room
+			cells[n] = CellType.Normal
+			q.append(n)
+			placed += 1
+			expanded_any = true
+
+		# If this node didn't expand at all when processed, it's a "dead end" by the algorithm's notion
+		if not expanded_any:
+			# avoid dupes
+			if not _end_rooms_cached.has(cur):
+				_end_rooms_cached.append(cur)
+
+		# Encourage growth when many rooms needed: reseed start periodically
+		if target_count > 16 and (pops % max(requeue_period, 1) == 0):
+			q.append(start_index)
+
+	return placed >= max(1, min(target_count, width * height))
 
 func _nearest_filled_to(target_i: int) -> int:
-	var best   := -1
+	var best := -1
 	var best_d := 1e9
 	for i in range(cells.size()):
 		if cells[i] == CellType.Empty: continue
 		var d := _manhattan(i, target_i)
-		if d < best_d: best = i; best_d = d
-	return best
-
-func _farthest_from(origin_i: int, arr: Array[int]) -> int:
-	if arr.is_empty():
-		return -1
-	var best   := arr[0]
-	var best_d := -1
-	for i in arr:
-		var d := _manhattan(origin_i, i)
-		if d > best_d:
+		if d < best_d:
 			best = i
 			best_d = d
 	return best
 
-# Minimap Rendering
+func _manhattan(a: int, b: int) -> int:
+	var pa := xy(a); var pb := xy(b)
+	return abs(pa.x - pb.x) + abs(pa.y - pb.y)
+
+# --- Drawing (unchanged styling) ---
 func _draw() -> void:
-	# Background
+	# bg grid
 	for y in range(height):
 		for x in range(width):
 			var r := Rect2(Vector2(x*cell_px, y*cell_px), Vector2(cell_px, cell_px))
-			draw_rect(r, Color(0,0,0,0.1), false, 1.0)
-	
-	#cells + Door Nottches
+			draw_rect(r, Color(0,0,0,0.08), false, 1.0)
+
 	for i in range(cells.size()):
-		if cells[i] == CellType.Empty: continue
+		var t: int = cells[i]
+		if t == CellType.Empty: continue
 		var p := xy(i)
 		var rect := Rect2(Vector2(p.x*cell_px, p.y*cell_px), Vector2(cell_px, cell_px))
 		var col := Color(0.18, 0.22, 0.28)
-		match cells[i]:
+		match t:
 			CellType.Start: col = Color(0.2, 0.7, 0.3)
-			CellType.Boss: col = Color(0.75, 0.2, 0.2)
-			CellType.Item: col = Color(0.9, 0.8, 0.25)
+			CellType.Boss:  col = Color(0.75, 0.2, 0.2)
+			CellType.Item:  col = Color(0.9, 0.8, 0.25)
 		draw_rect(rect, col, true)
 		draw_rect(rect, Color(1,1,1,0.25), false, 1.0)
 
-		# Draw door notches
-		var cx := rect.position.x + rect.size.x / 2
-		var cy := rect.position.y + rect.size.y / 2
+		# door notches (for visual connectivity)
+		var cx := rect.position.x + rect.size.x / 2.0
+		var cy := rect.position.y + rect.size.y / 2.0
 		var notch := cell_px * 0.15
 		for n in neighbours(i):
 			if cells[n] == CellType.Empty: continue
 			var np := xy(n)
-			if np.y == p.y - 1: draw_line(Vector2(cx, rect.position.y), Vector2(cx, rect.position.y + notch), Color.WHITE, 2.0) # Up
-			elif np.y == p.y + 1: draw_line(Vector2(cx, rect.position.y + rect.size.y), Vector2(cx, rect.position.y + rect.size.y - notch), Color.WHITE, 2.0) # Down
-			elif np.x == p.x - 1: draw_line(Vector2(rect.position.x, cy), Vector2(rect.position.x + notch, cy), Color.WHITE, 2.0) # Left
-			elif np.x == p.x + 1: draw_line(Vector2(rect.position.x + rect.size.x, cy), Vector2(rect.position.x + rect.size.x - notch, cy), Color.WHITE, 2.0) # Right
+			if np.y == p.y - 1:
+				draw_line(Vector2(cx, rect.position.y), Vector2(cx, rect.position.y + notch), Color.WHITE, 2.0)
+			elif np.y == p.y + 1:
+				draw_line(Vector2(cx, rect.position.y + rect.size.y), Vector2(cx, rect.position.y + rect.size.y - notch), Color.WHITE, 2.0)
+			elif np.x == p.x - 1:
+				draw_line(Vector2(rect.position.x, cy), Vector2(rect.position.x + notch, cy), Color.WHITE, 2.0)
+			elif np.x == p.x + 1:
+				draw_line(Vector2(rect.position.x + rect.size.x, cy), Vector2(rect.position.x + rect.size.x - notch, cy), Color.WHITE, 2.0)
