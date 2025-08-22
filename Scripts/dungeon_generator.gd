@@ -145,6 +145,36 @@ func _carve_dead_end() -> int:
 	cells[new_i] = CellType.Normal
 	return new_i
 
+func _filled_neighbors(i: int) -> int:
+	var c := 0
+	for n in neighbours(i):
+		if cells[n] != CellType.Empty:
+			c += 1
+	return c
+
+func _would_make_2x2(i: int) -> bool:
+	var p := xy(i)
+	var quads := [
+		[Vector2i(p.x, p.y),     Vector2i(p.x+1, p.y),   Vector2i(p.x,   p.y+1), Vector2i(p.x+1, p.y+1)],
+		[Vector2i(p.x-1, p.y),   Vector2i(p.x,   p.y),   Vector2i(p.x-1, p.y+1), Vector2i(p.x,   p.y+1)],
+		[Vector2i(p.x,   p.y-1), Vector2i(p.x+1, p.y-1), Vector2i(p.x,   p.y),   Vector2i(p.x+1, p.y)],
+		[Vector2i(p.x-1, p.y-1), Vector2i(p.x,   p.y-1), Vector2i(p.x-1, p.y),   Vector2i(p.x,   p.y)]
+	]
+	for quad in quads:
+		var in_bounds_all := true
+		var filled := 0
+		for q in quad:
+			if not in_bounds(q.x, q.y):
+				in_bounds_all = false
+				break
+			var qi := idx(q.x, q.y)
+			# pretend 'i' will be filled
+			if qi == i or cells[qi] != CellType.Empty:
+				filled += 1
+		if in_bounds_all and filled == 4:
+			return true
+	return false
+
 # Generation Algorithm
 func generate() -> void:
 	#initialize cell array to EMPTY
@@ -153,7 +183,7 @@ func generate() -> void:
 
 	# Grow the dungeon layout, starting from center cell
 	var center := idx(width / 2, height / 2)
-	var target := _rng.randi_range(min_rooms, max_rooms)
+	var target :=  _rng.randi_range(min_rooms, max_rooms)
 	_grow(center, target)
 
 	# Place Special rooms
@@ -164,7 +194,7 @@ func _grow(start_index: int, target_count: int) -> void:
 	cells[start_index] = CellType.Normal
 	queue.append(start_index)
 
-	while _filled_count() < target_count and queue.size() > 0:
+	while _filled_count() < target_count and not queue.is_empty():
 		var pick := _rng.randi_range(0, queue.size()-1) if _rng.randf() < branching else queue.size() - 1
 		var current := queue[pick]
 		queue.remove_at(pick)
@@ -174,15 +204,15 @@ func _grow(start_index: int, target_count: int) -> void:
 
 		var expanded := false
 		for n in nb:
-			if cells[n] == CellType.Empty:
+			if cells[n] == CellType.Empty and _filled_neighbors(n) <= 1 and not _would_make_2x2(n):
 				cells[n] = CellType.Normal
 				queue.append(n)
 				expanded = true
 				if _filled_count() >= target_count:
 					break
-		
+
 		if not expanded and _rng.randf() < 0.35:
-			queue.append(current) # Reinsert if no expansion happened
+			queue.append(current)
 
 func _place_special_rooms(center: int) -> void:
 	# Start: center or nearest filled

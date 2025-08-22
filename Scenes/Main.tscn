@@ -8,3 +8,4 @@ script = ExtResource("1_idj7w")
 
 [node name="Dungeon" type="Node2D" parent="."]
 script = ExtResource("2_kln2b")
+branching = 0.7
