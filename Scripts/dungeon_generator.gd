@@ -105,6 +105,46 @@ func _remove_branch(from_i: int, via_n: int) -> void:
 				continue
 			stack.push_back(nn)
 
+func _collect_dead_ends_excluding(exclude: Array[int]) -> Array[int]:
+	var out: Array[int] = []
+	var skip := {}
+	for e in exclude: skip[e] = true
+	for i in range(cells.size()):
+		if cells[i] != CellType.Empty and not skip.has(i) and _degree(i) == 1:
+			out.append(i)
+	return out
+
+# Try to create a new dead-end by carving a single Normal cell
+# off an existing corridor/room that has an empty neighbor.
+func _carve_dead_end() -> int:
+	var attachment_points: Array[int] = []
+	for i in range(cells.size()):
+		if cells[i] == CellType.Empty: continue
+		# prefer corridors (degree 2) but allow anything with at least 1 empty neighbor
+		var has_empty := false
+		for n in neighbours(i):
+			if cells[n] == CellType.Empty:
+				has_empty = true
+				break
+		if has_empty:
+			attachment_points.append(i)
+
+	if attachment_points.is_empty():
+		return -1
+
+	# Pick a random attachment, then a random empty neighbor to become the dead end
+	var base := attachment_points[_rng.randi_range(0, attachment_points.size()-1)]
+	var empties: Array[int] = []
+	for n in neighbours(base):
+		if cells[n] == CellType.Empty:
+			empties.append(n)
+	if empties.is_empty():
+		return -1
+
+	var new_i := empties[_rng.randi_range(0, empties.size()-1)]
+	cells[new_i] = CellType.Normal
+	return new_i
+
 # Generation Algorithm
 func generate() -> void:
 	#initialize cell array to EMPTY
@@ -145,63 +185,40 @@ func _grow(start_index: int, target_count: int) -> void:
 			queue.append(current) # Reinsert if no expansion happened
 
 func _place_special_rooms(center: int) -> void:
-	# Start
+	# Start: center or nearest filled
 	start_i = center if cells[center] != CellType.Empty else _nearest_filled_to(center)
 	if start_i != -1:
 		cells[start_i] = CellType.Start
 
-	# Collect true dead ends, excluding Start
-	var dead_ends: Array[int] = []
-	for i in range(cells.size()):
-		if cells[i] != CellType.Empty and i != start_i and _degree(i) == 1:
-			dead_ends.append(i)
+	# Gather dead ends excluding start
+	var dead_ends: Array[int] = _collect_dead_ends_excluding([start_i])
 
-	# If we somehow have zero dead ends, force one and refresh the list.
-	if dead_ends.is_empty():
-		var any_room := _nearest_filled_to(center)
-		if any_room != -1 and any_room != start_i:
-			_ensure_dead_end(any_room, start_i)
-		# Rebuild dead ends after pruning
-		dead_ends.clear()
-		for i in range(cells.size()):
-			if cells[i] != CellType.Empty and i != start_i and _degree(i) == 1:
-				dead_ends.append(i)
+	# If we don't have at least 2 dead ends (boss + item), carve new cul-de-sacs
+	while dead_ends.size() < 2:
+		var carved := _carve_dead_end()  # adds a 1-tile branch off a corridor
+		if carved == -1:
+			break # couldn't carve; give up gracefully
+		dead_ends.append(carved)
 
-	# --- Boss: farthest TRUE dead end from Start ---
+	# Boss: farthest from start among dead_ends
 	boss_i = _farthest_from(start_i, dead_ends)
 	if boss_i != -1:
-		_ensure_dead_end(boss_i, start_i)  # guarantee degree==1 (no-op if already)
 		cells[boss_i] = CellType.Boss
 
-	# --- Item: farthest TRUE dead end excluding Start & Boss ---
+	# Item: farthest from start among remaining dead_ends
 	var candidates: Array[int] = []
 	for i in dead_ends:
 		if i != boss_i and i != start_i:
 			candidates.append(i)
 
-	# If that still leaves no candidate, force another dead end and try again.
+	# If we still somehow lack a candidate, try to carve one more
 	if candidates.is_empty():
-		# pick a far room that's not Start/Boss, then prune it into a dead end
-		var far_pick := -1
-		var best_d := -1
-		for i in range(cells.size()):
-			if cells[i] != CellType.Empty and i != start_i and i != boss_i:
-				var d := _manhattan(start_i, i)
-				if d > best_d:
-					best_d = d
-					far_pick = i
-		if far_pick != -1:
-			_ensure_dead_end(far_pick, start_i)
-
-		# Rebuild candidates strictly from degree==1 cells
-		candidates.clear()
-		for i in range(cells.size()):
-			if cells[i] != CellType.Empty and i != start_i and i != boss_i and _degree(i) == 1:
-				candidates.append(i)
+		var carved2 := _carve_dead_end()
+		if carved2 != -1:
+			candidates.append(carved2)
 
 	item_i = _farthest_from(start_i, candidates)
 	if item_i != -1:
-		_ensure_dead_end(item_i, start_i)  # guarantee degree==1
 		cells[item_i] = CellType.Item
 	
 func _filled_count() -> int:
