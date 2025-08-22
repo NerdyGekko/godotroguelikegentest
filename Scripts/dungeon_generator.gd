@@ -10,6 +10,7 @@ class_name Dungeon1D
 @export var branching: float =0.5 #Between 0 and 1, the higher the value the bushy the dungeon will look like
 @export var genSeed: int = 0 # Seed for random generation
 @export var cell_px: int = 64
+@export_range(0.0, 1.0, 0.05) var neighbor_expand_chance: float = 0.55
 
 # Cell Types
 enum CellType{ Empty = -1, Normal = 0, Start = 1, Boss = 2, Item = 3}
