@@ -14,4 +14,3 @@ func _unhandled_input(event: InputEvent) -> void:
 				d.queue_redraw()
 			KEY_ESCAPE:
 				get_tree().quit()
-

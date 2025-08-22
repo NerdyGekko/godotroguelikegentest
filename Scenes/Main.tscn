@@ -8,6 +8,3 @@ script = ExtResource("1_idj7w")
 
 [node name="Dungeon" type="Node2D" parent="."]
 script = ExtResource("2_kln2b")
-width = 12
-min_rooms = 10
-branching = 10.0

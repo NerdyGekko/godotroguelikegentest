@@ -48,6 +48,63 @@ func neighbours(i: int) -> Array[int]:
 	if p.x < width - 1: out.append(i + 1) #right
 	return out
 
+# Compute degree quickly (you already have _degree(i)).
+# Keep the neighbor on the path back to start, remove all other branches.
+func _ensure_dead_end(i: int, start_index: int) -> void:
+	if i == -1 or cells[i] == CellType.Empty:
+		return
+	if _degree(i) <= 1:
+		return
+
+	# Choose the neighbor closest to start to KEEP (so we don't cut Start off).
+	var keep_n := _neighbor_closest_to(i, start_index)
+	for n in neighbours(i):
+		if n == keep_n: 
+			continue
+		if cells[n] != CellType.Empty:
+			_remove_branch(i, n)  # delete everything reachable through n, without crossing back through i
+
+# Pick neighbor with smallest (estimated) distance to start.
+# Manhattan works well on this 4-connected grid; if you want exact graph distance later,
+# replace with a BFS distance map.
+func _neighbor_closest_to(i: int, start_index: int) -> int:
+	var best := -1
+	var best_d := 1_000_000
+	for n in neighbours(i):
+		if cells[n] == CellType.Empty: 
+			continue
+		var d := _manhattan(n, start_index)
+		if d < best_d:
+			best = n
+			best_d = d
+	return best
+
+# Remove the whole branch that lies "beyond" (from_i -> via_n), without crossing back through from_i.
+func _remove_branch(from_i: int, via_n: int) -> void:
+	var stack: Array[int] = [via_n]
+	var visited := {}
+	visited[ from_i ] = true  # acts as a hard boundary: don't cross back through the special room
+	while not stack.is_empty():
+		var cur: int = stack.pop_back()
+		if visited.has(cur):
+			continue
+		visited[cur] = true
+
+		# Delete this room.
+		if cells[cur] != CellType.Empty:
+			cells[cur] = CellType.Empty
+
+		# Flood outward, but never step back through 'from_i'.
+		for nn in neighbours(cur):
+			if visited.has(nn):
+				continue
+			if cells[nn] == CellType.Empty:
+				continue
+			# Don't step back through the pivot room.
+			if nn == from_i:
+				continue
+			stack.push_back(nn)
+
 # Generation Algorithm
 func generate() -> void:
 	#initialize cell array to EMPTY
@@ -93,36 +150,58 @@ func _place_special_rooms(center: int) -> void:
 	if start_i != -1:
 		cells[start_i] = CellType.Start
 
-	# Collect dead ends, EXCLUDING start
+	# Collect true dead ends, excluding Start
 	var dead_ends: Array[int] = []
 	for i in range(cells.size()):
 		if cells[i] != CellType.Empty and i != start_i and _degree(i) == 1:
 			dead_ends.append(i)
-	if dead_ends.is_empty():
-		# fallback: any normal room except start
-		for j in range(cells.size()):
-			if cells[j] == CellType.Normal and j != start_i:
-				dead_ends.append(j)
 
-	# Boss: farthest from start among dead_ends
+	# If we somehow have zero dead ends, force one and refresh the list.
+	if dead_ends.is_empty():
+		var any_room := _nearest_filled_to(center)
+		if any_room != -1 and any_room != start_i:
+			_ensure_dead_end(any_room, start_i)
+		# Rebuild dead ends after pruning
+		dead_ends.clear()
+		for i in range(cells.size()):
+			if cells[i] != CellType.Empty and i != start_i and _degree(i) == 1:
+				dead_ends.append(i)
+
+	# --- Boss: farthest TRUE dead end from Start ---
 	boss_i = _farthest_from(start_i, dead_ends)
 	if boss_i != -1:
+		_ensure_dead_end(boss_i, start_i)  # guarantee degree==1 (no-op if already)
 		cells[boss_i] = CellType.Boss
 
-	# Item: farthest from start among candidates that exclude boss and start
+	# --- Item: farthest TRUE dead end excluding Start & Boss ---
 	var candidates: Array[int] = []
 	for i in dead_ends:
 		if i != boss_i and i != start_i:
 			candidates.append(i)
 
-	# If that leaves no candidates, fallback to ANY room (non-empty) excluding start & boss
+	# If that still leaves no candidate, force another dead end and try again.
 	if candidates.is_empty():
+		# pick a far room that's not Start/Boss, then prune it into a dead end
+		var far_pick := -1
+		var best_d := -1
 		for i in range(cells.size()):
 			if cells[i] != CellType.Empty and i != start_i and i != boss_i:
+				var d := _manhattan(start_i, i)
+				if d > best_d:
+					best_d = d
+					far_pick = i
+		if far_pick != -1:
+			_ensure_dead_end(far_pick, start_i)
+
+		# Rebuild candidates strictly from degree==1 cells
+		candidates.clear()
+		for i in range(cells.size()):
+			if cells[i] != CellType.Empty and i != start_i and i != boss_i and _degree(i) == 1:
 				candidates.append(i)
 
 	item_i = _farthest_from(start_i, candidates)
 	if item_i != -1:
+		_ensure_dead_end(item_i, start_i)  # guarantee degree==1
 		cells[item_i] = CellType.Item
 	
 func _filled_count() -> int:
